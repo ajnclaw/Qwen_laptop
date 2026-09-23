@@ -90,6 +90,7 @@ test_ideogram.py
 *.ckpt
 *.pkl
 *.txt
+!requirements.txt
 *.png
 *.jpg
 *.mp4

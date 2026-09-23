@@ -1,0 +1,36 @@
+# WeeLLM dependencies
+# Install with: pip install -r requirements.txt
+# Or install:  pip install -e .
+# Or install directly: pip install git+https://github.com/Jit-Roy/weellm
+
+# Core deep learning
+torch>=2.1.0
+torchvision
+
+# Diffusers + transformers
+diffusers @ git+https://github.com/huggingface/diffusers
+transformers>=5.14.1
+accelerate>=0.30.0
+peft>=0.10.0
+
+# Safetensors (fast, memory-mapped model loading)
+safetensors>=0.4.0
+
+# Numerical computing (used by disk/ram seekers)
+numpy>=1.24.0
+
+# Hugging Face model download
+huggingface_hub>=1.32.0
+
+# Image handling
+Pillow>=10.0.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Memory reporting
+psutil>=5.9.0
+
+# GGUF model support (optional — only needed for .gguf model files)
+gguf>=0.13.0
+av
