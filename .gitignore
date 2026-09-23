@@ -1,0 +1,159 @@
+# =============================================================================
+#  WeeLLM .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+*.so
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+venv/
+env/
+.env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# -----------------------------------------------------------------------------
+# Jupyter notebooks
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb
+backup
+inference*.py
+temp*.py
+
+# -----------------------------------------------------------------------------
+# Model weights & shards  (large binary files — store elsewhere)
+# -----------------------------------------------------------------------------
+flux2-klein-4b/
+Z-Image-Turbo/
+stable-diffusion-xl-base-1.0/
+stable-diffusion-v1-5/
+FLUX.1-schnell/
+stable-diffusion-3.5-medium/
+Qwen-Image/
+AuraFlow/
+HiDream-I1-Full/
+ideogram-4-fp8/
+Wan2.2-TI2V-5B/
+CogView4-6B/
+Kolors/
+OmniGen2/
+ERNIE-Image/
+LongCat-Image/
+Krea-2-Turbo/
+LongCat-Image-Edit/
+Juggernaut-XL-v9/
+MiniMax-H3/
+FLUX.2-klein-9B/
+FLUX.1-Fill-dev/
+Qwen-Image-Edit/
+HiDream-E1-Full/
+LTX-2.5/
+stable-diffusion-3.5-large/
+Krea-2-Raw/
+Qwen-Image-2.1/
+
+
+download*.py
+test_flux2.py
+test_ideogram.py
+
+# Ignore all safetensors weight files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.txt
+*.png
+*.jpg
+*.mp4
+*.gguf
+temp
+demo*.py
+
+# Ignore shard directories created by WeeLLM's splitter
+**/splitted_model/
+
+# Ignore HuggingFace cache
+~/.cache/huggingface/
+
+# -----------------------------------------------------------------------------
+# Generated output images
+# -----------------------------------------------------------------------------
+output*.png
+output*.jpg
+output*.jpeg
+output*.webp
+
+# -----------------------------------------------------------------------------
+# IDE / editor
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS artifacts
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Environment / secrets
+# -----------------------------------------------------------------------------
+.env
+.env.*
+*.key
+secrets.json
+
+# -----------------------------------------------------------------------------
+# Logs & profiling
+# -----------------------------------------------------------------------------
+*.log
+*.prof
+*.trace
+logs/
+
+# -----------------------------------------------------------------------------
+# pytest / coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
