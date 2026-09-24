@@ -1,31 +1,31 @@
 # qwen_server.py
 #
-# Persistent HTTP server exposing Qwen-Image (text2img) and Qwen-Image-Edit
-# (img2img) via WeeLLM's layer-streaming pipelines. Keeps both pipelines
-# loaded in memory between requests -- the ~13min/image cost we measured
-# includes a full pipeline load; a persistent server pays that once, not
-# per image.
+# HTTP server exposing Qwen-Image (text2img) via WeeLLM, one fresh
+# subprocess per request rather than a persistent in-memory pipeline.
 #
-# Mirrors main.py's own call pattern exactly (introspecting pipe.__call__
-# to handle Qwen's guidance_scale -> true_cfg_scale rename and to strip
-# kwargs the specific pipeline doesn't accept) rather than the simplified
-# .generate() wrapper shown in the README, since main.py is the version
-# we've actually confirmed works end to end.
+# We tried keeping the pipeline warm across requests to save reload
+# time, but every single successful generation all night -- on WSL2
+# and on native Windows -- went through main.py's one-shot CLI, which
+# loads fresh and exits. Every failure went through the persistent
+# version, hitting "Cannot copy out of meta tensor; no data!" even on
+# requests with no prior interruption -- something in WeeLLM's layer
+# eviction/reload bookkeeping doesn't survive being reused across
+# multiple requests in one long-lived process. This trades away the
+# reload-time saving for the only pattern that's actually proven
+# reliable: exactly mirroring the validated main.py CLI invocation,
+# fresh process, every time.
 #
 # Run with: .venv\Scripts\python.exe qwen_server.py
 
-import base64
-import inspect
-import io
 import json
+import subprocess
+import sys
+import tempfile
+import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-import torch
-from PIL import Image
-
-from weellm import WeeImageToImagePipeline, WeeTextToImagePipeline
+from pathlib import Path
 
 
 HOST = "0.0.0.0"
@@ -39,61 +39,60 @@ NEGATIVE_PROMPT = (
     "over-saturated, deformed, blurry, low quality, uncanny"
 )
 
-_t2i_pipe = None
-_edit_pipe = None
+MAIN_PY = Path(__file__).parent / "main.py"
+
+# Only one generation at a time -- these are subprocesses on a single
+# 6GB GPU, running two at once would fight over VRAM.
+_generation_lock = threading.Lock()
 
 
-def _load_t2i():
-    global _t2i_pipe
-    if _t2i_pipe is None:
-        print("[qwen_server] Loading text2img pipeline (first call only)...")
-        _t2i_pipe = WeeTextToImagePipeline.from_pretrained(
-            TEXT2IMG_MODEL, device="cuda", torch_dtype=torch.bfloat16
-        )
-    return _t2i_pipe
+def _run_generation(prompt, output_path, height, width, steps, guidance_scale, seed,
+                     image_path=None, strength=None):
+    cmd = [
+        sys.executable, str(MAIN_PY),
+        "--model", EDIT_MODEL if image_path else TEXT2IMG_MODEL,
+        "--prompt", prompt,
+        "--negative_prompt", NEGATIVE_PROMPT,
+        "--height", str(height),
+        "--width", str(width),
+        "--steps", str(steps),
+        "--guidance_scale", str(guidance_scale),
+        "--seed", str(seed),
+        "--dtype", "bfloat16",
+        "--output", str(output_path),
+        "--verbose",
+    ]
 
+    if image_path:
+        cmd += ["--image", str(image_path)]
+    if strength is not None:
+        cmd += ["--strength", str(strength)]
 
-def _load_edit():
-    global _edit_pipe
-    if _edit_pipe is None:
-        print("[qwen_server] Loading image-edit pipeline (first call only)...")
-        _edit_pipe = WeeImageToImagePipeline.from_pretrained(
-            EDIT_MODEL, device="cuda", torch_dtype=torch.bfloat16
-        )
-    return _edit_pipe
-
-
-def _call_pipe(pipe, **call_kwargs):
-    """
-    Same introspection main.py uses before calling pipe(**call_kwargs) --
-    different underlying diffusers pipelines (Qwen vs SDXL vs Flux) expect
-    different exact kwarg names, so this adapts rather than hardcoding one.
-    """
-    sig = inspect.signature(pipe.__call__)
-    has_kwargs = any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    result = subprocess.run(
+        cmd,
+        cwd=str(MAIN_PY.parent),
+        capture_output=True,
+        text=True,
+        timeout=3600,
     )
-    expected = set(sig.parameters.keys())
 
-    if "true_cfg_scale" in expected and "guidance_scale" in call_kwargs:
-        call_kwargs["true_cfg_scale"] = call_kwargs.pop("guidance_scale")
+    if result.returncode != 0 or not output_path.exists():
+        raise RuntimeError(
+            f"main.py exited {result.returncode}\n"
+            f"--- stdout (tail) ---\n{result.stdout[-3000:]}\n"
+            f"--- stderr (tail) ---\n{result.stderr[-3000:]}"
+        )
 
-    if not has_kwargs:
-        call_kwargs = {k: v for k, v in call_kwargs.items() if k in expected}
-
-    return pipe(**call_kwargs)
+    return output_path.read_bytes()
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send_image(self, image):
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-
+    def _send_bytes(self, data, content_type):
         self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(buffer.tell()))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(buffer.getvalue())
+        self.wfile.write(data)
 
     def _send_error(self, message):
         self.send_response(500)
@@ -106,49 +105,35 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
             prompt = body["prompt"]
-            seed = body.get("seed", 42)
             start = time.time()
 
-            if self.path == "/generate":
-                pipe = _load_t2i()
-                generator = torch.Generator(device=pipe.device).manual_seed(seed)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "out.png"
+                image_path = None
 
-                out = _call_pipe(
-                    pipe,
-                    prompt=prompt,
-                    negative_prompt=NEGATIVE_PROMPT,
-                    height=body.get("height", 1024),
-                    width=body.get("width", 576),
-                    num_inference_steps=body.get("steps", 10),
-                    guidance_scale=body.get("guidance_scale", 3.5),
-                    generator=generator,
-                )
-                self._send_image(out.images[0])
+                if self.path == "/edit":
+                    import base64
 
-            elif self.path == "/edit":
-                pipe = _load_edit()
-                generator = torch.Generator(device=pipe.device).manual_seed(seed)
-                init_image = Image.open(
-                    io.BytesIO(base64.b64decode(body["image_b64"]))
-                ).convert("RGB")
+                    image_path = Path(tmpdir) / "ref.png"
+                    image_path.write_bytes(base64.b64decode(body["image_b64"]))
+                elif self.path != "/generate":
+                    self.send_error(404, "Not found")
+                    return
 
-                out = _call_pipe(
-                    pipe,
-                    prompt=prompt,
-                    negative_prompt=NEGATIVE_PROMPT,
-                    image=init_image,
-                    strength=body.get("strength", 0.6),
-                    height=body.get("height", 1024),
-                    width=body.get("width", 576),
-                    num_inference_steps=body.get("steps", 20),
-                    guidance_scale=body.get("guidance_scale", 3.5),
-                    generator=generator,
-                )
-                self._send_image(out.images[0])
+                with _generation_lock:
+                    data = _run_generation(
+                        prompt=prompt,
+                        output_path=output_path,
+                        height=body.get("height", 1024),
+                        width=body.get("width", 576),
+                        steps=body.get("steps", 20 if image_path else 10),
+                        guidance_scale=body.get("guidance_scale", 3.5),
+                        seed=body.get("seed", 42),
+                        image_path=image_path,
+                        strength=body.get("strength") if image_path else None,
+                    )
 
-            else:
-                self.send_error(404, "Not found")
-                return
+                self._send_bytes(data, "image/png")
 
             print(f"[qwen_server] {self.path} done in {time.time() - start:.1f}s")
 
@@ -163,8 +148,9 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Qwen image server listening on {HOST}:{PORT}")
-    print("Both pipelines load lazily on first use -- first /generate or")
-    print("/edit call will be slow (model load), later calls reuse it.")
+    print("Each request spawns a fresh main.py subprocess (no warm model")
+    print("kept in memory) -- slower per-call, but this is the only")
+    print("pattern that's proven reliable so far.")
     server.serve_forever()
 
 
